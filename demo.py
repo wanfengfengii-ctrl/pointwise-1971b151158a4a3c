@@ -5,10 +5,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from analysis import freeze
-from intake import IntakeCatalog, accept, pack
+from intake import IntakeCatalog, accept, accept_mode, issue_mode, pack
 from protocol import RevisionStore, Transition, revise
-from records import connect_archive, get, initialize_archive
-from review import sign
+from records import connect_archive, get, get_mode, initialize_archive
+from review import sign, sign_mode
 
 
 def prepare(station_path, intake, bench, wait_after_miss):
@@ -56,6 +56,67 @@ def check_report(case_id, signed, retrieved, expected, parents, input_data, orac
     }, ensure_ascii=False, sort_keys=True))
 
 
+MODE_HALF = Fraction(1, 2)
+
+
+def run_mode_demo(directory):
+    """Same and opposite mode tables signed and read back after the station closes."""
+    station_path = directory / 'mode-station.sqlite'
+    archive_path = directory / 'mode-archive.sqlite'
+    with (closing(IntakeCatalog(directory / 'mode-intake.sqlite')) as intake,
+          closing(RevisionStore(station_path)) as station):
+        intake.initialize()
+        station.initialize()
+        fixed = (Transition('试验', '通过', MODE_HALF), Transition('试验', '失败', MODE_HALF))
+        pass_only = (Transition('试验', '通过', Fraction(1)),)
+        fail_only = (Transition('试验', '失败', Fraction(1)),)
+        tables = {}
+        for bench in ('左台', '右台'):
+            revision = revise(station, bench, states=['试验', '通过', '失败'],
+                              start='试验', pass_state='通过', fail_state='失败',
+                              transitions=fixed)
+            tables[bench] = {
+                'same': issue_mode(station, revision, {'high': pass_only, 'low': fail_only}),
+                'low': issue_mode(station, revision, {'high': fail_only, 'low': pass_only}),
+            }
+        accepted = {}
+        for bench, pair in tables.items():
+            accepted[bench] = {name: accept_mode(intake, package, package.identity)
+                               for name, package in pair.items()}
+        station.close()
+        with closing(connect_archive(archive_path)) as archive:
+            initialize_archive(archive)
+            same = sign_mode(intake, archive, accepted['左台']['same'],
+                             accepted['右台']['same'], 1)
+            opposite = sign_mode(intake, archive, accepted['左台']['same'],
+                                 accepted['右台']['low'], 1)
+    with closing(connect_archive(archive_path)) as reopened:
+        initialize_archive(reopened)
+        same = get_mode(reopened, same.report_id)
+        opposite = get_mode(reopened, opposite.report_id)
+    bound = lambda report: (report.draft.lower, report.draft.upper)
+    if bound(same) != (MODE_HALF, MODE_HALF) or bound(opposite) != (0, 0):
+        raise AssertionError('V2 mode demonstration signed unexpected bounds')
+    print(f'V2 同档 {same.report_id} 截止 {same.draft.horizon} 下界 {same.draft.lower} '
+          f'上界 {same.draft.upper} 首执 {same.receipt.receipt_id}')
+    print(f'V2 反档 {opposite.report_id} 截止 {opposite.draft.horizon} 下界 '
+          f'{opposite.draft.lower} 上界 {opposite.draft.upper} '
+          f'首执 {opposite.receipt.receipt_id}')
+    print('POINTWISE_SCENARIO ' + json.dumps({
+        'case_id': 'v2.mode_same_and_opposite',
+        'input': {'每拍同档概率': '1/2', '截止拍': 1},
+        'expected': {'same': ['1/2', '1/2'], 'opposite': ['0', '0']},
+        'actual': {'same': [str(same.draft.lower), str(same.draft.upper)],
+                   'opposite': [str(opposite.draft.lower), str(opposite.draft.upper)]},
+        'downstream_expected': {'parents': [same.receipt.accepted_ids,
+                                            opposite.receipt.accepted_ids]},
+        'downstream_actual': {'parents': [same.receipt.accepted_ids,
+                                          opposite.receipt.accepted_ids]},
+        'code_paths': ['intake/modes.py', 'review/bounds.py', 'records/mode.py'],
+        'oracle': '两台共用当拍档位。双高档同过为 1/2；一台高档、一台低档则错开。',
+    }, ensure_ascii=False, sort_keys=True))
+
+
 def main():
     with TemporaryDirectory(prefix='bench-review-') as temporary:
         directory = Path(temporary)
@@ -79,6 +140,7 @@ def main():
                          (new_left, right),
                          {'尝试通过率': '1/2', '左台失败后额外等待': 1, '右台失败后额外等待': 0},
                          '左台只在奇数拍尝试。同拍联合质量为首项 1/4、公比 1/8 的几何级数。')
+        run_mode_demo(directory)
 
 
 if __name__ == '__main__':

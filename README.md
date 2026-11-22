@@ -70,4 +70,27 @@ with closing(IntakeCatalog('night.sqlite')) as intake:
 
 两台独立，共同最终通过概率 C 为两台最终通过率之积。同拍质量 S 为每拍两台首达质量乘积之和。只有双方都继续，状态对才进入下一拍。同步域外的零贡献状态不进入方程求解，因而可以精确累计无限重试的尾部。C 大于零时条件值为 S/C，错拍可得到精确的 0。C 为零时条件值为 `None`，报告仍可合法签发。
 
-`tests/test_protocol.py` 核对规程校验、固定修订及单台核定。`tests/test_intake.py` 核对接纳、固定身份和冲突。`tests/test_review.py` 核对断源同步、错拍、闭环、无资格及选件失败。`tests/test_records.py` 核对更正、原始父件顺序、精确领取与事务回滚。
+`tests/test_protocol.py` 核对规程校验、固定修订及单台核定。`tests/test_intake.py` 核对接纳、固定身份和冲突。`tests/test_review.py` 核对断源同步、错拍、闭环、无资格及选件失败。`tests/test_records.py` 核对更正、原始父件顺序、精确领取与事务回滚。`tests/test_modes.py` 核对 V2 发行、实收、共享档位两界、拒绝边界及重开领取。
+
+## 双档供压（V2）
+
+`MODES.md` 描述夜班预留联检位使用的双档签报。固定修订的每个非终局状态、每个去向在两档上的等权平均必须等于原冻结修订，核对覆盖未走到的行。件内只保留匿名状态身份，两档共用同一身份，站内状态名和原表留站。
+
+```python
+from intake import issue_mode, accept_mode
+from review import sign_mode
+from records import get_mode
+
+package = issue_mode(station, revision, {'high': high_edges, 'low': low_edges})
+accepted = accept_mode(intake, package, package.identity)
+signed = sign_mode(intake, archive, left, right, horizon=2)   # 关站后，仅用实收库
+reopened = get_mode(archive, signed.report_id)               # 仅重开档案库
+print(reopened.draft.lower, reopened.draft.upper)
+```
+
+- 每拍两台共用一次等概率档位抽取（各 1/2），相邻及非相邻拍相互独立，并独立于此前进程。给定当拍档位和截至上拍的完整双台历史，各台下一步的条件边际必须等于自身当前状态的档位行；两台的联合耦合在行边际内可任意选取。因此单拍期望成功是两行分布之间的运输问题极值。
+- 只有第 1 至 `horizon` 拍内两台同拍首次进入通过终局才计入。任一侧提前单独通过或任一侧失败，该路径贡献为零。`lower`、`upper` 是在全部合法联合过程中的精确可达最小值和最大值；两者都是 `Fraction`，无同过路径时均为 0 仍签发。
+- 件号 `P2-A2-…` 的同号异文抛 `intake.catalog.PackageConflict`；版本、身份、摘要或行守恒不符抛 `intake.modes.InvalidModePackage`（`ValueError`）。`accept` 继续只办理 V1，`accept_mode` 只办理 V2。`sign_mode` 要求两个不同台架的 V2 实收号，混版、缺件或坏证据均拒绝；V1 报告号 `SR-…` 与 V2 报告号 `SM-…` 可区分并在同一档案库并存。
+- `before_commit` 与 V1 相同，位于报告、两父件与首执暂存之后及提交之前。异常原样传出，失败后无本次报告或首执，原请求可重办。`get_mode` 查无 V2 报告时返回 `None`。
+
+`python3 -B mode_examples.py` 逐一发行并核对 `MODES.md` 对照样例，最后展示同一冻结修订发行同档与反档两件，关站后签出 `[1/2,1/2]` 与 `[0,0]`，再只重开档案领取。

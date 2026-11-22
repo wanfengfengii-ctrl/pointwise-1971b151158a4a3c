@@ -75,9 +75,42 @@ CREATE TABLE IF NOT EXISTS receipts (
 '''
 
 
+_MODE_REPORTS = '''
+CREATE TABLE IF NOT EXISTS mode_reports (
+    id INTEGER PRIMARY KEY,
+    horizon INTEGER NOT NULL CHECK (horizon >= 1),
+    lower_n TEXT NOT NULL,
+    lower_d TEXT NOT NULL,
+    upper_n TEXT NOT NULL,
+    upper_d TEXT NOT NULL
+)
+'''
+_MODE_PARENTS = '''
+CREATE TABLE IF NOT EXISTS mode_report_parents (
+    report_id INTEGER NOT NULL REFERENCES mode_reports (id),
+    slot INTEGER NOT NULL CHECK (slot IN (0, 1)),
+    accepted_id TEXT NOT NULL,
+    package_id TEXT NOT NULL,
+    bench_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    analysis_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY (report_id, slot)
+)
+'''
+_MODE_RECEIPTS = '''
+CREATE TABLE IF NOT EXISTS mode_receipts (
+    report_id INTEGER PRIMARY KEY REFERENCES mode_reports (id),
+    report_number TEXT NOT NULL UNIQUE,
+    body BLOB NOT NULL
+)
+'''
+
+
 def initialize_archive(connection: sqlite3.Connection) -> None:
     with archive_transaction(connection):
-        for definition in (_REPORTS, _PARENTS, _RECEIPTS):
+        for definition in (_REPORTS, _PARENTS, _RECEIPTS,
+                           _MODE_REPORTS, _MODE_PARENTS, _MODE_RECEIPTS):
             connection.execute(definition)
 
 
